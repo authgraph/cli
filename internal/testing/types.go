@@ -21,9 +21,9 @@ type SchemaSetup struct {
 
 // Teardown defines cleanup after tests.
 type Teardown struct {
-	Tuples        []Tuple `yaml:"tuples,omitempty"`
-	DeleteSchema  bool    `yaml:"delete_schema,omitempty"`
-	CleanupSetup  bool    `yaml:"cleanup_setup,omitempty"` // auto-remove setup tuples
+	Tuples       []Tuple `yaml:"tuples,omitempty"`
+	DeleteSchema bool    `yaml:"delete_schema,omitempty"`
+	CleanupSetup bool    `yaml:"cleanup_setup,omitempty"` // auto-remove setup tuples
 }
 
 // Tuple represents a relationship tuple for setup/teardown.

@@ -47,18 +47,18 @@ func FormatJSON(w io.Writer, report *Report) error {
 
 // JUnitTestSuites represents a JUnit XML test report.
 type JUnitTestSuites struct {
-	XMLName xml.Name        `xml:"testsuites"`
+	XMLName xml.Name         `xml:"testsuites"`
 	Suites  []JUnitTestSuite `xml:"testsuite"`
 }
 
 // JUnitTestSuite represents a single test suite in JUnit format.
 type JUnitTestSuite struct {
-	XMLName  xml.Name       `xml:"testsuite"`
-	Name     string         `xml:"name,attr"`
-	Tests    int            `xml:"tests,attr"`
-	Failures int            `xml:"failures,attr"`
-	Errors   int            `xml:"errors,attr"`
-	Time     float64        `xml:"time,attr"`
+	XMLName  xml.Name        `xml:"testsuite"`
+	Name     string          `xml:"name,attr"`
+	Tests    int             `xml:"tests,attr"`
+	Failures int             `xml:"failures,attr"`
+	Errors   int             `xml:"errors,attr"`
+	Time     float64         `xml:"time,attr"`
 	Cases    []JUnitTestCase `xml:"testcase"`
 }
 

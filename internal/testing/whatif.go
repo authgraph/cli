@@ -21,10 +21,10 @@ func NewWhatIfRunner(client *authgraph.Client, verbose bool) *WhatIfRunner {
 
 // WhatIfResult holds the result of a what-if simulation.
 type WhatIfResult struct {
-	SchemaValid  bool         `json:"schema_valid"`
-	Errors       []string     `json:"errors,omitempty"`
-	Report       *Report      `json:"report,omitempty"`
-	Regressions  []Regression `json:"regressions,omitempty"`
+	SchemaValid bool         `json:"schema_valid"`
+	Errors      []string     `json:"errors,omitempty"`
+	Report      *Report      `json:"report,omitempty"`
+	Regressions []Regression `json:"regressions,omitempty"`
 }
 
 // Regression represents a test that would change behavior after a schema change.
