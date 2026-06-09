@@ -80,9 +80,9 @@ func runTest(cmd *cobra.Command, args []string) error {
 	}
 
 	client, err := authgraph.NewClient(authgraph.Config{
-		BaseURL: cfg.BaseURL,
-		APIKey:  cfg.APIKey,
-		Timeout: 10 * time.Second,
+		BaseURL:      cfg.BaseURL,
+		APIKey:       cfg.APIKey,
+		Timeout:      10 * time.Second,
 		CacheEnabled: boolPtr(false), // Don't cache during tests
 	})
 	if err != nil {
