@@ -8,8 +8,8 @@ import (
 
 	authgraph "github.com/authgraph/authgraph-go"
 	"github.com/authgraph/cli/internal/config"
+	permstest "github.com/authgraph/cli/internal/testing"
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 )
 
 var testCmd = &cobra.Command{
@@ -17,46 +17,57 @@ var testCmd = &cobra.Command{
 	Short: "Run permission test assertions",
 	Long: `Run a suite of permission test assertions from a YAML file.
 
-The test file defines expected permission outcomes:
+The test file defines setup, assertions, and teardown:
+
+  setup:
+    schema:
+      file: ./permissions.yaml
+    tuples:
+      - { subject: "user:alice", relation: "editor", resource: "document:readme" }
 
   tests:
-    - name: "alice can read the readme"
-      subject: "user:alice"
-      permission: "read"
-      resource: "document:readme"
-      expected: allowed
+    - name: "editors can write"
+      check:
+        subject: "user:alice"
+        action: "write"
+        resource: "document:readme"
+      expect: allowed
 
-    - name: "bob cannot delete the project"
-      subject: "user:bob"
-      permission: "delete"
-      resource: "project:main"
-      expected: denied
+    - name: "viewers cannot delete"
+      check:
+        subject: "user:bob"
+        action: "delete"
+        resource: "document:readme"
+      expect: denied
+
+  teardown:
+    cleanup_setup: true
+
+Use --what-if to simulate a schema change and detect regressions:
+
+  authgraph test --file tests.yaml --what-if new-schema.yaml
 
 Examples:
   authgraph test --file permission-tests.yaml
-  authgraph test -f tests/access.yaml`,
+  authgraph test -f tests/access.yaml --output json
+  authgraph test -f tests.yaml --output junit > results.xml
+  authgraph test -f tests.yaml --what-if proposed-schema.yaml`,
 	RunE: runTest,
 }
 
-var testFile string
+var (
+	testFile   string
+	whatIfFile string
+	outputFmt  string
+	verbose    bool
+)
 
 func init() {
 	testCmd.Flags().StringVarP(&testFile, "file", "f", "", "Test file path (required)")
+	testCmd.Flags().StringVar(&whatIfFile, "what-if", "", "Simulate schema change and detect regressions")
+	testCmd.Flags().StringVarP(&outputFmt, "output", "o", "text", "Output format: text, json, junit")
+	testCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Show detailed output")
 	testCmd.MarkFlagRequired("file")
-}
-
-// TestSuite represents a permission test file.
-type TestSuite struct {
-	Tests []TestCase `yaml:"tests"`
-}
-
-// TestCase represents a single permission assertion.
-type TestCase struct {
-	Name       string `yaml:"name"`
-	Subject    string `yaml:"subject"`
-	Permission string `yaml:"permission"`
-	Resource   string `yaml:"resource"`
-	Expected   string `yaml:"expected"` // "allowed" or "denied"
 }
 
 func runTest(cmd *cobra.Command, args []string) error {
@@ -65,92 +76,101 @@ func runTest(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	data, err := os.ReadFile(testFile)
+	suite, err := permstest.LoadSuite(testFile)
 	if err != nil {
-		return fmt.Errorf("reading test file: %w", err)
-	}
-
-	var suite TestSuite
-	if err := yaml.Unmarshal(data, &suite); err != nil {
-		return fmt.Errorf("parsing test file: %w", err)
-	}
-
-	if len(suite.Tests) == 0 {
-		return fmt.Errorf("no tests found in %s", testFile)
+		return err
 	}
 
 	client, err := authgraph.NewClient(authgraph.Config{
 		BaseURL:      cfg.BaseURL,
 		APIKey:       cfg.APIKey,
 		Timeout:      10 * time.Second,
-		CacheEnabled: boolPtr(false), // Don't cache during tests
+		CacheEnabled: boolPtr(false),
 	})
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("Running %d permission tests...\n\n", len(suite.Tests))
+	ctx := context.Background()
 
-	passed := 0
-	failed := 0
-	var failures []string
-
-	for _, tc := range suite.Tests {
-		subject, err := parseEntity(tc.Subject)
-		if err != nil {
-			failures = append(failures, fmt.Sprintf("  ✗ %s — invalid subject: %s", tc.Name, tc.Subject))
-			failed++
-			continue
-		}
-		resource, err := parseEntity(tc.Resource)
-		if err != nil {
-			failures = append(failures, fmt.Sprintf("  ✗ %s — invalid resource: %s", tc.Name, tc.Resource))
-			failed++
-			continue
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		result, err := client.Check(ctx, authgraph.CheckRequest{
-			Subject:    authgraph.Subject{Type: subject.Type, ID: subject.ID},
-			Permission: tc.Permission,
-			Resource:   authgraph.Resource{Type: resource.Type, ID: resource.ID},
-		})
-		cancel()
-
-		if err != nil {
-			failures = append(failures, fmt.Sprintf("  ✗ %s — error: %v", tc.Name, err))
-			failed++
-			continue
-		}
-
-		expectAllowed := tc.Expected == "allowed" || tc.Expected == "allow" || tc.Expected == "true"
-
-		if result.Allowed == expectAllowed {
-			fmt.Printf("  ✓ %s\n", tc.Name)
-			passed++
-		} else {
-			actual := "denied"
-			if result.Allowed {
-				actual = "allowed"
-			}
-			msg := fmt.Sprintf("  ✗ %s — expected %s, got %s", tc.Name, tc.Expected, actual)
-			fmt.Println(msg)
-			failures = append(failures, msg)
-			failed++
-		}
+	// What-if mode: simulate schema change and detect regressions
+	if whatIfFile != "" {
+		return runWhatIf(ctx, client, suite)
 	}
 
-	fmt.Printf("\n%d passed, %d failed, %d total\n", passed, failed, len(suite.Tests))
+	// Standard mode: run tests
+	return runStandard(ctx, client, suite)
+}
 
-	if failed > 0 {
-		fmt.Println("\nFailures:")
-		for _, f := range failures {
-			fmt.Println(f)
+func runStandard(ctx context.Context, client *authgraph.Client, suite *permstest.Suite) error {
+	runner := permstest.NewRunner(client, verbose)
+
+	if outputFmt == "text" {
+		fmt.Printf("Running %d permission tests...\n\n", len(suite.Tests))
+	}
+
+	report, err := runner.Run(ctx, suite)
+	if err != nil {
+		return err
+	}
+
+	switch outputFmt {
+	case "json":
+		if err := permstest.FormatJSON(os.Stdout, report); err != nil {
+			return err
+		}
+	case "junit":
+		if err := permstest.FormatJUnit(os.Stdout, report, testFile); err != nil {
+			return err
+		}
+	default:
+		permstest.FormatText(os.Stdout, report)
+	}
+
+	if report.Failed > 0 {
+		os.Exit(1)
+	}
+	return nil
+}
+
+func runWhatIf(ctx context.Context, client *authgraph.Client, suite *permstest.Suite) error {
+	whatIfRunner := permstest.NewWhatIfRunner(client, verbose)
+
+	if outputFmt == "text" {
+		fmt.Printf("Simulating schema change: %s\n", whatIfFile)
+		fmt.Printf("Running %d tests for regression detection...\n\n", len(suite.Tests))
+	}
+
+	result, err := whatIfRunner.Simulate(ctx, whatIfFile, suite)
+	if err != nil {
+		return err
+	}
+
+	if !result.SchemaValid {
+		fmt.Fprintf(os.Stderr, "✗ Schema validation failed:\n")
+		for _, e := range result.Errors {
+			fmt.Fprintf(os.Stderr, "  - %s\n", e)
 		}
 		os.Exit(1)
 	}
 
-	fmt.Println("\n✓ All tests passed")
+	switch outputFmt {
+	case "json":
+		if err := permstest.FormatJSON(os.Stdout, result.Report); err != nil {
+			return err
+		}
+	case "junit":
+		if err := permstest.FormatJUnit(os.Stdout, result.Report, testFile); err != nil {
+			return err
+		}
+	default:
+		permstest.FormatText(os.Stdout, result.Report)
+		permstest.FormatRegressions(os.Stdout, result.Regressions)
+	}
+
+	if result.Report.Failed > 0 || len(result.Regressions) > 0 {
+		os.Exit(1)
+	}
 	return nil
 }
 
